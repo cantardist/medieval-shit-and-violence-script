@@ -2,7 +2,7 @@
 
 /*
  * Historical Punishment & Torture Equipment — Universal JanitorAI Module
- * v0.2.0
+ * v0.3.0
  *
  * Goal: give any compatible character broad, context-sensitive knowledge of
  * historical / historically-inspired equipment without changing their personality.
@@ -29,7 +29,8 @@ const CONFIG = {
   CONTINUITY_BONUS: 4,
   CATEGORY_MATCH_BONUS: 2,
   SETTING_MATCH_BONUS: 2,
-  ACCESS_REQUIRED_FOR_LARGE: true
+  ACCESS_REQUIRED_FOR_LARGE: true,
+  PROACTIVE_THRESHOLD: 7
 };
 
 const CATALOGUE = [
@@ -144,17 +145,36 @@ function countMentions(text, terms) {
 function estimateTokens(text) { return Math.ceil((text || "").length / 4); }
 
 const signals = getSignals();
+const characterText = [
+  context.character.personality || "",
+  context.character.description || "",
+  context.character.scenario || "",
+  context.character.first_message || ""
+].join(" ").toLowerCase();
+
+function budgetFromScenario(fallback) {
+  const m = String(context.character.scenario || "").match(/\[CONTEXT BUDGET:[^\]]*per_script=(\d+)/i);
+  return m ? Math.min(fallback, Math.max(80, parseInt(m[1],10))) : fallback;
+}
+const ACTIVE_MAX_TOKENS = budgetFromScenario(220);
 const ACCESS_TERMS = ["collection","owns","owned","private dungeon","torture chamber","equipment room","device room","museum","gallery","workshop","custom-built","replica","apparatus"];
 const SCENE_TERMS = ["torture","punishment","punish","captive","prisoner","restrain","restraint","shackle","dungeon","torment","device","apparatus","collection"];
+const CAPTIVITY_TERMS = ["kidnap","kidnapped","captive","prisoner","hostage","bound","tied","restrained","locked up","held against","cannot leave","can't leave","cell","dungeon"];
+const PROPENSITY_TERMS = ["sadist","sadistic","cruel","torture","torturer","punish","punishment","torment","interrogat","violent","brutal","ruthless","collector","collection"];
+const OPPORTUNITY_TERMS = ["basement","dungeon","cell","chamber","private room","prison","collection","equipment room","device room","workshop","gallery"];
+const captivityScore = countMentions(signals.recent, CAPTIVITY_TERMS) * 2;
+const propensityScore = Math.min(6, countMentions(characterText, PROPENSITY_TERMS) * 2);
+const opportunityScore = Math.min(4, countMentions(signals.recent + " " + characterText, OPPORTUNITY_TERMS));
+const proactiveScore = captivityScore + propensityScore + opportunityScore;
 const directLatest = CATALOGUE.filter(d => includesAny(signals.latest, d.aliases));
 const activationScore =
   countMentions(signals.latest, SCENE_TERMS) * 3 +
   countMentions(signals.recent, SCENE_TERMS) +
   directLatest.length * 8;
-const activated = activationScore >= CONFIG.MIN_ACTIVATION_SCORE;
+const activated = activationScore >= CONFIG.MIN_ACTIVATION_SCORE || proactiveScore >= CONFIG.PROACTIVE_THRESHOLD;
 
 if (activated) {
-  const accessEstablished = includesAny(signals.recent, ACCESS_TERMS);
+  const accessEstablished = includesAny(signals.recent + " " + characterText, ACCESS_TERMS) || opportunityScore >= 2;
   const scored = CATALOGUE.map((d, index) => {
     const latestMentions = countMentions(signals.latest, d.aliases);
     const recentMentions = countMentions(signals.recent, d.aliases);
@@ -204,15 +224,15 @@ if (activated) {
     const summary = "- " + d.name + ": " + d.summary + ".\n";
     const bullet = "- " + d.name + " [" + d.status + "].\n";
     let line = item.score >= CONFIG.FULL_SCORE ? full : (item.score >= CONFIG.SUMMARY_SCORE ? summary : bullet);
-    if (used + estimateTokens(line) > CONFIG.MAX_TOKENS) line = bullet;
-    if (used + estimateTokens(line) > CONFIG.MAX_TOKENS) break;
+    if (used + estimateTokens(line) > ACTIVE_MAX_TOKENS) line = bullet;
+    if (used + estimateTokens(line) > ACTIVE_MAX_TOKENS) break;
     block += line;
     used += estimateTokens(line);
     emitted.push(d.id);
   }
 
   if (emitted.length) {
-    block += "Choose only as fits {{char}}'s existing personality, location, access, space, and continuity; do not cycle props for novelty.\n";
+    block += "These are narrative options, not mandatory actions. If {{char}}'s established motives make punishment, coercion, or restraint appropriate now, {{char}} may independently introduce an appropriate established/accessible device without waiting for {{user}} to request one. Never invent that motive from this module. Choose only as fits personality, location, access, space, and continuity.\n";
     context.character.scenario += block;
   }
 
