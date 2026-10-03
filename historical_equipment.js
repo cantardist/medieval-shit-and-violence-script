@@ -2,7 +2,7 @@
 
 /*
  * Historical Punishment & Torture Equipment — Universal JanitorAI Module
- * v0.1.0
+ * v0.2.0
  *
  * Goal: give any compatible character broad, context-sensitive knowledge of
  * historical / historically-inspired equipment without changing their personality.
@@ -18,15 +18,18 @@ context.character.example_dialogs = context.character.example_dialogs || "";
 
 const CONFIG = {
   DEBUG: false,
-  HISTORY_DEPTH: 8,
-  MAX_INJECTED: 5,
-  MAX_TOKENS: 520,
-  MIN_ACTIVATION_SCORE: 2,
-  RECENT_DEVICE_BONUS: 5,
-  DIRECT_NAME_BONUS: 12,
+  HISTORY_DEPTH: 6,
+  MAX_INJECTED: 4,
+  MAX_TOKENS: 220,
+  FULL_SCORE: 14,
+  SUMMARY_SCORE: 8,
+  MIN_ACTIVATION_SCORE: 4,
+  DIRECT_NAME_BONUS: 14,
+  LATEST_MESSAGE_BONUS: 5,
+  CONTINUITY_BONUS: 4,
   CATEGORY_MATCH_BONUS: 2,
-  SETTING_MATCH_BONUS: 1,
-  VARIETY_PENALTY: 2
+  SETTING_MATCH_BONUS: 2,
+  ACCESS_REQUIRED_FOR_LARGE: true
 };
 
 const CATALOGUE = [
@@ -113,104 +116,110 @@ const CATEGORY_TERMS = {
 
 const SETTING_TERMS = ["dungeon","basement","mansion","chamber","cell","prison","courtyard","hall","gallery","collection","outdoor","yard","table","ship","water"];
 
-function recentText() {
+function messageText(m) {
+  return ((m && m.message) ? m.message : String(m || "")).toLowerCase();
+}
+
+function getSignals() {
   const messages = context.chat.last_messages || [];
   const start = Math.max(0, messages.length - CONFIG.HISTORY_DEPTH);
-  let out = "";
-  for (let i = start; i < messages.length; i++) {
-    const m = messages[i];
-    out += " " + ((m && m.message) ? m.message : String(m || ""));
-  }
-  out += " " + (context.chat.last_message || "");
-  return out.toLowerCase();
+  const recent = messages.slice(start).map(messageText).join(" ");
+  const latest = String(context.chat.last_message || "").toLowerCase();
+  return {recent: recent + " " + latest, latest};
 }
 
 function includesAny(text, terms) {
   return terms.some(t => text.includes(t));
 }
 
-function countHits(text, terms) {
+function countMentions(text, terms) {
   let n = 0;
-  for (const t of terms) if (text.includes(t)) n++;
+  for (const term of terms) {
+    let at = 0;
+    while ((at = text.indexOf(term, at)) !== -1) { n++; at += Math.max(1, term.length); }
+  }
   return n;
 }
 
-function estimateTokens(text) {
-  return Math.ceil((text || "").length / 4);
-}
+function estimateTokens(text) { return Math.ceil((text || "").length / 4); }
 
-const text = recentText();
-const directMentions = CATALOGUE.filter(d => includesAny(text, d.aliases));
-const activated = directMentions.length > 0 || includesAny(text, ACTIVATION_TERMS);
+const signals = getSignals();
+const ACCESS_TERMS = ["collection","owns","owned","private dungeon","torture chamber","equipment room","device room","museum","gallery","workshop","custom-built","replica","apparatus"];
+const SCENE_TERMS = ["torture","punishment","punish","captive","prisoner","restrain","restraint","shackle","dungeon","torment","device","apparatus","collection"];
+const directLatest = CATALOGUE.filter(d => includesAny(signals.latest, d.aliases));
+const activationScore =
+  countMentions(signals.latest, SCENE_TERMS) * 3 +
+  countMentions(signals.recent, SCENE_TERMS) +
+  directLatest.length * 8;
+const activated = activationScore >= CONFIG.MIN_ACTIVATION_SCORE;
 
 if (activated) {
+  const accessEstablished = includesAny(signals.recent, ACCESS_TERMS);
   const scored = CATALOGUE.map((d, index) => {
-    let score = 0;
-    const direct = includesAny(text, d.aliases);
-    if (direct) score += CONFIG.DIRECT_NAME_BONUS;
+    const latestMentions = countMentions(signals.latest, d.aliases);
+    const recentMentions = countMentions(signals.recent, d.aliases);
+    let score = latestMentions * CONFIG.DIRECT_NAME_BONUS;
+    score += recentMentions * CONFIG.CONTINUITY_BONUS;
+    if (latestMentions) score += CONFIG.LATEST_MESSAGE_BONUS;
 
     for (const cat of d.cats) {
       const terms = CATEGORY_TERMS[cat] || [];
-      if (includesAny(text, terms)) score += CONFIG.CATEGORY_MATCH_BONUS;
+      if (includesAny(signals.latest, terms)) score += CONFIG.CATEGORY_MATCH_BONUS * 2;
+      else if (includesAny(signals.recent, terms)) score += CONFIG.CATEGORY_MATCH_BONUS;
     }
-
     for (const setting of d.settings) {
-      if (setting === "any" || text.includes(setting)) score += CONFIG.SETTING_MATCH_BONUS;
+      if (setting !== "any" && signals.recent.includes(setting)) score += CONFIG.SETTING_MATCH_BONUS;
     }
 
-    // General relevance without making every entry equally likely.
-    if (includesAny(text, ACTIVATION_TERMS)) score += 1;
+    // Do not casually materialize room-sized equipment where ownership/access
+    // has not been established. Direct mentions always override this penalty.
+    const large = d.cats.includes("large") || d.cats.includes("stationary");
+    if (CONFIG.ACCESS_REQUIRED_FOR_LARGE && large && !accessEstablished && !latestMentions) score -= 4;
 
-    // Slight deterministic variety: prevents the first five catalogue entries
-    // from winning every vague activation while remaining stable for a message.
-    const seed = ((context.chat.message_count || 0) + index * 7) % 11;
-    score += seed / 20;
-
-    return {device:d, score, direct};
+    // Stable tiebreaker only; no random device cycling.
+    score += (10 - (index % 10)) / 100;
+    return {device:d, score, latestMentions, recentMentions};
   }).filter(x => x.score >= CONFIG.MIN_ACTIVATION_SCORE);
 
-  scored.sort((a,b) => {
-    if (b.direct !== a.direct) return b.direct ? 1 : -1;
-    return b.score - a.score;
-  });
+  scored.sort((a,b) => b.score - a.score);
 
   const chosen = [];
-  const usedCats = {};
+  const primaryCounts = {};
   for (const item of scored) {
     if (chosen.length >= CONFIG.MAX_INJECTED) break;
     const primary = item.device.cats[0] || "other";
-    if (usedCats[primary] >= 2 && !item.direct) continue;
+    if ((primaryCounts[primary] || 0) >= 2 && !item.latestMentions) continue;
     chosen.push(item);
-    usedCats[primary] = (usedCats[primary] || 0) + 1;
+    primaryCounts[primary] = (primaryCounts[primary] || 0) + 1;
   }
 
-  let block = "\n\n[HISTORICAL EQUIPMENT MODULE]\n";
-  block += "This module supplements {{char}}'s existing characterization; it never creates motives, cruelty, or actions by itself. Use it only when the established scene independently makes punishment, captivity, torture, historical apparatus, or a relevant collection appropriate. The setting may be modern: antique, replica, reconstructed, custom-built, and museum-style pieces can plausibly exist in a private collection. Prefer specific established equipment over generic modern substitutes when appropriate. Preserve continuity with equipment already mentioned. Do not treat disputed museum pieces as proven medieval history.\n";
-  block += "Relevant catalogue shortlist:\n";
-
-  let usedTokens = estimateTokens(block);
+  const header = "\n[HISTORICAL EQUIPMENT] Supplement {{char}} only; never create motives or cruelty. Use only if the established scene independently makes this equipment relevant. Preserve already-established equipment and access. Modern settings may contain antiques/replicas. Disputed pieces are not proven medieval history.\n";
+  let block = header;
+  let used = estimateTokens(block);
   const emitted = [];
 
-  for (const item of chosen) {
-    const d = item.device;
-    const full = "- " + d.name + " [" + d.status + "; " + d.era + "]: " + d.visual + ". Narrative identity: " + d.summary + ".\n";
-    const compact = "- " + d.name + " [" + d.status + "]: " + d.summary + ".\n";
-    let line = full;
-    if (usedTokens + estimateTokens(line) > CONFIG.MAX_TOKENS) line = compact;
-    if (usedTokens + estimateTokens(line) > CONFIG.MAX_TOKENS) continue;
+  for (let i = 0; i < chosen.length; i++) {
+    const item = chosen[i], d = item.device;
+    const full = "- " + d.name + " [" + d.status + "]: " + d.visual + "; " + d.summary + ".\n";
+    const summary = "- " + d.name + ": " + d.summary + ".\n";
+    const bullet = "- " + d.name + " [" + d.status + "].\n";
+    let line = item.score >= CONFIG.FULL_SCORE ? full : (item.score >= CONFIG.SUMMARY_SCORE ? summary : bullet);
+    if (used + estimateTokens(line) > CONFIG.MAX_TOKENS) line = bullet;
+    if (used + estimateTokens(line) > CONFIG.MAX_TOKENS) break;
     block += line;
-    usedTokens += estimateTokens(line);
+    used += estimateTokens(line);
     emitted.push(d.id);
   }
 
-  block += "Selection rule: choose according to {{char}}'s existing personality, the current location, available space, established restraints/equipment, scene continuity, and desired narrative tone. Do not randomly cycle devices merely for novelty. Descriptions should remain fictional and atmospheric rather than becoming real-world procedural instructions.\n[/HISTORICAL EQUIPMENT MODULE]";
-
-  context.character.scenario += block;
+  if (emitted.length) {
+    block += "Choose only as fits {{char}}'s existing personality, location, access, space, and continuity; do not cycle props for novelty.\n";
+    context.character.scenario += block;
+  }
 
   if (CONFIG.DEBUG) {
-    console.log("[Historical Equipment] active=true tokens~" + estimateTokens(block) + " emitted=" + emitted.join(","));
-    console.log("[Historical Equipment] top scores=" + scored.slice(0,10).map(x => x.device.id + ":" + x.score.toFixed(2)).join(" | "));
+    console.log("[Historical Equipment v0.2] activation=" + activationScore + " tokens~" + estimateTokens(block) + " access=" + accessEstablished + " emitted=" + emitted.join(","));
+    console.log("[Historical Equipment v0.2] scores=" + scored.slice(0,10).map(x => x.device.id + ":" + x.score.toFixed(2)).join(" | "));
   }
 } else if (CONFIG.DEBUG) {
-  console.log("[Historical Equipment] inactive: no relevant scene signals");
+  console.log("[Historical Equipment v0.2] inactive activation=" + activationScore);
 }
