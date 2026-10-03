@@ -1,64 +1,67 @@
 # Universal Historical Equipment Module for JanitorAI
 
-A reusable JanitorAI Script that gives characters context-sensitive knowledge of a broad catalogue of historical, early-modern, later penal, reconstructed, and famous disputed/legendary torture or punishment equipment.
+A reusable, character-agnostic JanitorAI Script providing context-sensitive knowledge of historical, penal, reconstructed, and famous disputed/legendary punishment and torture equipment.
 
-## Design goals
+## v0.2 design
 
-- **Character-agnostic:** does not make a character evil or change their motives.
-- **Modern-setting compatible:** a mansion, basement, private collection, gallery, prison-like room, fantasy dungeon, etc. can plausibly contain antique or replica equipment.
-- **Large catalogue, small prompt footprint:** the database stays inside JavaScript; only a ranked shortlist (default: up to 5 entries) is appended to the model context.
-- **Token-capped:** default injection cap is approximately 520 tokens.
-- **Context-sensitive:** recent messages are scanned for scene, category, setting, and direct device-name signals.
-- **Continuity-friendly:** directly mentioned devices receive a large relevance bonus.
-- **Historically labeled:** entries distinguish documented objects from mixed-provenance, disputed, legendary, reconstructed, and later-period objects.
-- **Non-procedural:** entries identify and describe props for fiction without serving as a real-world injury manual.
+The catalogue lives in JavaScript; the LLM never receives the whole database. Each generation the script reads a short recent-message window, scores candidates, and appends only the strongest matches to `context.character.scenario`.
 
-## Installation
+Defaults are deliberately conservative:
 
-1. Open the character in JanitorAI and create/add a Script lorebook entry.
-2. Paste the contents of `historical_equipment.js`.
-3. Configure the Script to run for the character. The module internally decides whether the current scene is relevant.
-4. Test in JanitorAI Test Chat.
-5. Turn `CONFIG.DEBUG` to `true` while troubleshooting. The debug panel will show whether the module activated, approximate injected tokens, selected IDs, and top scores.
+```js
+HISTORY_DEPTH: 6,
+MAX_INJECTED: 4,
+MAX_TOKENS: 220,
+FULL_SCORE: 14,
+SUMMARY_SCORE: 8,
+MIN_ACTIVATION_SCORE: 4
+```
+
+Entries automatically degrade through **full → summary → bullet** representations as relevance falls or the token budget fills. This follows the adaptive-lorebook approach documented by Tydorius, but uses a much smaller default budget because this module is supplemental equipment knowledge rather than an entire world lorebook.
+
+## Behavior
+
+The module does not make a character cruel, initiate torture, supply a motivation, or rewrite the setting. The character card remains authoritative.
+
+Activation weights the latest user message more strongly than older context while recent messages provide continuity. Direct device mentions receive the strongest bonus. Already-mentioned equipment stays salient. Large/stationary apparatus receives a penalty unless the conversation establishes a collection, dedicated room, workshop, museum/gallery, private dungeon, replica/custom equipment, or directly names the apparatus. This reduces the chance of a room-sized object appearing from nowhere.
+
+Selection is deterministic: there is no random novelty cycling.
+
+## Historical labels
+
+Catalogue entries carry provenance labels such as `documented`, `documented variants`, `mixed provenance`, `disputed`, `legendary/misattributed`, and `generic/reconstruction`. A modern fictional collector can still own replicas of disputed objects without the model presenting them as unquestionably medieval.
 
 ## Performance
 
-The script intentionally does **not** inject the entire catalogue. JanitorAI Scripts run before each generation, so the expensive resource is usually model context, not having a moderate JavaScript array in the sandbox. This module scans only the last 8 messages by default, scores the local catalogue with simple string operations, selects at most 5 entries, and caps injected text at ~520 estimated tokens.
+A larger internal catalogue does not automatically mean a larger model prompt. The main controls are the number of entries injected and the character/token budget. v0.2 scans only six recent messages, uses simple string/array operations, selects at most four entries, and targets about 220 tokens of injected context.
 
-Important settings:
+If you need an even smaller footprint:
 
 ```js
-HISTORY_DEPTH: 8,
-MAX_INJECTED: 5,
-MAX_TOKENS: 520,
-MIN_ACTIVATION_SCORE: 2
+MAX_INJECTED: 3,
+MAX_TOKENS: 150
 ```
 
-For a smaller-context model, try `MAX_INJECTED: 3` and `MAX_TOKENS: 300`.
+## Installation
 
-## Historical accuracy
+1. Add a JanitorAI Script lorebook entry to the character.
+2. Paste `historical_equipment.js`.
+3. Test with `DEBUG: true` first.
+4. In Test Chat, inspect activation score, selected IDs, approximate tokens, and whether access to large equipment was detected.
+5. Set `DEBUG: false` for normal use.
 
-"Torture device" lists on the internet often mix real judicial/penal equipment with later museum inventions and folklore. The catalogue therefore uses a `status` field. For example, the rack, pillory, stocks, thumbscrew, Scavenger's Daughter, bilboes, and various shackles/restraints have documentary histories; the famous iron maiden is primarily a later construction falsely marketed as medieval, while several museum staples have uncertain provenance.
+The script starts with `"use worker";`, guards writable context fields, reads `context.chat.last_message` / `last_messages`, and only appends with `+=`.
 
-The module still allows a modern fictional collector to own replicas of disputed objects; it simply tells the model not to present those objects as unquestionably medieval.
+## Files
 
-## Catalogue scope
+- `historical_equipment.js` — production module.
+- `tests/test-scenarios.md` — behavioral test matrix.
+- `docs/DESIGN.md` — selection/token architecture and tuning notes.
 
-The initial catalogue includes roughly fifty entries spanning:
-- restraints, shackles, stocks, pillories and cages
-- large stationary apparatus
-- suspension and confinement equipment
-- punishment/display furniture
-- penal-labor devices
-- execution/display structures
-- portable historical implements
-- disputed or legendary torture-museum objects
-- generic reconstructed restraint furniture useful in fictional modern collections
+## Safety / scope
 
-## JanitorAI sandbox assumptions
-
-The script uses ES6+ with `"use worker";`, guards character context fields, reads recent chat messages, and appends only to `context.character.scenario`. It does not use imports, network calls, storage, timers, DOM APIs, or filesystem access.
+Catalogue descriptions are identification, provenance, visual/narrative context, and selection metadata. They intentionally avoid operational instructions for injuring a real person.
 
 ## Version
 
-v0.1.0 — initial functional catalogue + relevance engine + token cap + debug mode.
+**v0.2.0** — adaptive detail, 220-token default budget, stronger latest-message weighting, continuity scoring, access checks for large apparatus, deterministic selection, tests and design documentation.
