@@ -23,3 +23,12 @@ JanitorAI does not guarantee script execution order, so neither script depends o
 ## Testing
 
 Test calm scenes first: ordinary conversation should not turn violent. Then test intimidation, a close-range struggle, an established fight, an escape attempt, and a scene with an already-established weapon. Confirm the character's card still determines whether they are restrained, theatrical, impulsive, cruel, reluctant, etc.
+
+
+## v0.2 safeguards
+
+The engine now infers confrontation intensity from 0–4 and gates higher-intensity narrative beats behind stronger scene evidence. It does not climb the intensity ladder merely to create variety.
+
+It also detects several common repetitive RP beat families in the recent window (including chin-grabbing, wall-pinning, repeated body-strike language, smirking, and leaning in). Matching action families receive a ranking penalty, and the injected guidance asks for a materially different beat unless continuity requires repetition.
+
+If a Context Control-style `[CONTEXT BUDGET: ... per_script=N]` marker is present in scenario context, the engine respects the smaller per-script budget instead of blindly using its normal 150-token ceiling.
